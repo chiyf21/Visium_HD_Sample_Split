@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+_sample_split*/
+_sample_split_v3*/
+*_segmented.h5ad
+.DS_Store
