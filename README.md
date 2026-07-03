@@ -85,12 +85,21 @@ base/_sample_split_v3/square_<bin>/<tag>/
 ├── sample_split_overview.png          # 3-panel diagnostic figure
 ├── visium_hd_sample_split.h5ad        # AnnData with sample_id column
 ├── spot_sample_assignment.parquet     # per-barcode assignment
-├── spot_sample_assignment.csv         # same, CSV format
+├── spot_sample_assignment.csv         # ← PRIMARY OUTPUT for R/Seurat
 ├── sample_summary.csv                 # per-sample statistics
 └── sample_label_grid.npy              # integer label grid (npy)
 ```
 
-### Per-sample AnnData after loading
+### Output table format (`spot_sample_assignment.csv`)
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `barcode` | str | Bin barcode, e.g. `s_016um_00301_00321-1` |
+| `in_tissue` | int | 1 = under tissue |
+| `sample_id` | int | 0 = background; 1, 2, 3, ... = sample number |
+| `sample_name` | str | `"background"`, `"sample_001"`, `"sample_002"`, ... |
+
+### Load in Python
 
 ```python
 import scanpy as sc
@@ -103,6 +112,35 @@ adata.obs["sample"]       # "sample_001", "sample_002", ...
 # Extract a single sample:
 sample1 = adata[adata.obs["sample_id"] == 1].copy()
 ```
+
+### Load in R (Seurat)
+
+```r
+# 1. Load the original Visium HD data
+obj <- Load10X_Spatial(
+    data.dir = "binned_outputs/square_016um",
+    bin.size = 16
+)
+
+# 2. Read and merge the sample assignment
+assignment <- read.csv("spot_sample_assignment.csv", row.names = 1)
+obj <- AddMetaData(obj, metadata = assignment)
+
+# 3. Verify
+table(obj$sample_name)
+
+# 4. Subset to a single sample
+obj_sample1 <- subset(obj, subset = sample_id == 1)
+obj_sample2 <- subset(obj, subset = sample_id == 2)
+
+# 5. Or remove background spots
+obj_clean <- subset(obj, subset = sample_id > 0)
+
+# 6. Split into a list of Seurat objects
+sample_list <- SplitObject(obj, split.by = "sample_name")
+```
+
+See `merge_to_seurat.R` for a standalone script.
 
 ## Algorithm
 
