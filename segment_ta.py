@@ -509,14 +509,18 @@ def sample_summary_table(pos: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def visualize_sample_split(img, pos: pd.DataFrame, grid_info: dict, sf: dict, out_png: Path):
+def visualize_sample_split(img, pos: pd.DataFrame, grid_info: dict, sf: dict,
+                           out_png: Path, overlay_he: bool = True):
     label_grid = grid_info["label_grid"]
     fg_grid = grid_info["foreground_grid"]
     opened_grid = grid_info["opened_grid"]
     sample_ids = sorted([int(x) for x in np.unique(label_grid) if int(x) > 0])
     n_samples = len(sample_ids)
 
-    fig, axes = plt.subplots(1, 4, figsize=(28, 7))
+    n_cols = 4 if (img is not None and overlay_he) else 3
+    fig, axes = plt.subplots(1, n_cols, figsize=(7 * n_cols, 7))
+    if n_cols == 3:
+        axes = list(axes)
 
     axes[0].imshow(fg_grid, cmap="gray")
     axes[0].set_title("Raw foreground bins")
@@ -530,7 +534,7 @@ def visualize_sample_split(img, pos: pd.DataFrame, grid_info: dict, sf: dict, ou
     axes[2].set_title(f"Final labels: {n_samples} samples")
     axes[2].axis("off")
 
-    if img is not None:
+    if img is not None and overlay_he:
         axes[3].imshow(img)
         scale = float(sf.get("tissue_hires_scalef", 1.0))
         foreground = pos["sample_id"].to_numpy() > 0
@@ -544,9 +548,6 @@ def visualize_sample_split(img, pos: pd.DataFrame, grid_info: dict, sf: dict, ou
             axes[3].scatter(x, y, s=0.8, alpha=0.55, color=cmap((int(sid) - 1) % n_colors), rasterized=True)
         axes[3].set_title("Sample assignment on H&E")
         axes[3].axis("off")
-    else:
-        axes[3].axis("off")
-        axes[3].set_title("No H&E image found")
 
     plt.tight_layout()
     out_png.parent.mkdir(parents=True, exist_ok=True)
@@ -575,7 +576,8 @@ def write_outputs(base: Path, bin_size: str, adata: sc.AnnData, pos: pd.DataFram
     np.save(label_npy, grid_info["label_grid"])
     np.save(fg_npy, grid_info["foreground_grid"])
     np.save(opened_npy, grid_info["opened_grid"])
-    visualize_sample_split(img, pos, grid_info, sf, fig_path)
+    visualize_sample_split(img, pos, grid_info, sf, fig_path,
+                           overlay_he=(not args.no_he_image))
 
     print("\n输出文件：")
     print(f"  AnnData:           {h5ad_path}")
@@ -595,6 +597,7 @@ def main():
     parser.add_argument("--open-radius", type=int, default=0, help="用 opening 打断细桥；0=不做。16um 可试 1-2")
     parser.add_argument("--connectivity", type=int, default=1, choices=[1, 2], help="1=4邻域，更保守；2=8邻域")
     parser.add_argument("--no-rescue", action="store_true", help="不补回 opening 后丢失的 foreground bin")
+    parser.add_argument("--no-he-image", action="store_true", help="可视化时不叠加 H&E 背景")
     parser.add_argument("--rescue-max-dist", type=float, default=None, help="opening 后补回距离阈值，单位 bin grid")
 
     parser.add_argument("--expected-samples", type=int, default=0, help="已知样本数时强烈推荐设置，例如 4")
