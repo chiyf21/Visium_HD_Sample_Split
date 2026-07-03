@@ -55,12 +55,22 @@ merge_sample_assignment <- function(
     obj <- AddMetaData(obj, metadata = assignment)
 
     # --- Remove H&E image (default = FALSE) ---
-    # Seurat stores the H&E in obj@images; SpatialFeaturePlot uses it
-    # as background even when images = NULL. Clearing it gives clean
-    # plots and reduces object size by ~30 MB.
+    # Seurat's SpatialFeaturePlot uses obj@images for coordinate scaling.
+    # Clearing it entirely breaks plotting. Instead, replace each image
+    # with a tiny blank raster — keeps the coordinate system, eliminates
+    # the ~30 MB tissue background, and speeds up rendering.
     if (!keep.he) {
-        message("Removing H&E image from Seurat object (use keep.he=TRUE to keep)")
-        obj@images <- list()
+        message("Replacing H&E images with blank (use keep.he=TRUE to keep original)")
+        for (img_name in names(obj@images)) {
+            s4_img <- obj@images[[img_name]]
+            # Replace raster data with 2x2 white — keeps S4 structure intact
+            blank <- as.raster(matrix("white", nrow = 2, ncol = 2))
+            tryCatch(
+                s4_img@image <- blank,
+                error = function(e) message("  (could not replace image in slot '", img_name, "')")
+            )
+            obj@images[[img_name]] <- s4_img
+        }
     }
 
     # --- Report ---
