@@ -20,11 +20,15 @@ library(Seurat)
 #' @param data.dir  Path to Space Ranger binned output folder
 #' @param csv.path  Path to spot_sample_assignment.csv
 #' @param bin.size  Bin size in microns (default: 16)
+#' @param keep.he   Keep H&E image in Seurat object? Default FALSE.
+#'                  TRUE = SpatialFeaturePlot shows tissue background.
+#'                  FALSE = clean plots, smaller object, faster rendering.
 #' @return A Seurat object with sample_id / sample_name / in_tissue metadata
 merge_sample_assignment <- function(
     data.dir,
     csv.path,
-    bin.size = 16
+    bin.size = 16,
+    keep.he  = FALSE
 ) {
     # --- Load original Visium HD data ---
     message("Loading Visium HD data from: ", data.dir)
@@ -49,6 +53,15 @@ merge_sample_assignment <- function(
 
     # --- Merge ---
     obj <- AddMetaData(obj, metadata = assignment)
+
+    # --- Remove H&E image (default = FALSE) ---
+    # Seurat stores the H&E in obj@images; SpatialFeaturePlot uses it
+    # as background even when images = NULL. Clearing it gives clean
+    # plots and reduces object size by ~30 MB.
+    if (!keep.he) {
+        message("Removing H&E image from Seurat object (use keep.he=TRUE to keep)")
+        obj@images <- list()
+    }
 
     # --- Report ---
     cat("\nSample distribution:\n")
@@ -82,6 +95,8 @@ if (sys.nframe() == 0) {
     out.dir    <- "seurat_output"
     bin.size   <- 16
 
+    keep.he <- FALSE
+
     # Parse
     i <- 1
     while (i <= length(args)) {
@@ -90,6 +105,7 @@ if (sys.nframe() == 0) {
             "--assignment" = { csv.path <- args[i+1]; i <- i+2 },
             "--out-dir"    = { out.dir  <- args[i+1]; i <- i+2 },
             "--bin-size"   = { bin.size <- as.numeric(args[i+1]); i <- i+2 },
+            "--keep-he"    = { keep.he  <- TRUE; i <- i+1 },
             { stop("Unknown argument: ", args[i]) }
         )
     }
@@ -101,7 +117,7 @@ if (sys.nframe() == 0) {
     message("  out.dir:    ", out.dir)
 
     # Run
-    obj <- merge_sample_assignment(data.dir, csv.path, bin.size)
+    obj <- merge_sample_assignment(data.dir, csv.path, bin.size, keep.he)
 
     # Save
     dir.create(out.dir, showWarnings = FALSE, recursive = TRUE)
