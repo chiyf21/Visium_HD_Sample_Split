@@ -55,21 +55,28 @@ merge_sample_assignment <- function(
     obj <- AddMetaData(obj, metadata = assignment)
 
     # --- Remove H&E image (default = FALSE) ---
-    # Seurat's SpatialFeaturePlot uses obj@images for coordinate scaling.
-    # Clearing it entirely breaks plotting. Instead, replace each image
-    # with a tiny blank raster — keeps the coordinate system, eliminates
-    # the ~30 MB tissue background, and speeds up rendering.
+    # Seurat stores H&E as a large raster in obj@images. Deleting the
+    # slot breaks coordinate scaling in SpatialFeaturePlot. This replaces
+    # the raster with a minimal 2x2 white image, keeping spatial coords
+    # intact while removing the ~30 MB tissue background.
     if (!keep.he) {
         message("Replacing H&E images with blank (use keep.he=TRUE to keep original)")
+        blank <- as.raster(matrix("white", nrow = 2, ncol = 2))
         for (img_name in names(obj@images)) {
-            s4_img <- obj@images[[img_name]]
-            # Replace raster data with 2x2 white — keeps S4 structure intact
-            blank <- as.raster(matrix("white", nrow = 2, ncol = 2))
-            tryCatch(
-                s4_img@image <- blank,
-                error = function(e) message("  (could not replace image in slot '", img_name, "')")
-            )
-            obj@images[[img_name]] <- s4_img
+            s4 <- obj@images[[img_name]]
+            # Seurat v4: @image slot  |  Seurat v5: may use $image or no slot
+            replaced <- FALSE
+            tryCatch({ s4@image <- blank; replaced <- TRUE },
+                     error = function(e) NULL)
+            if (!replaced) tryCatch({ s4$image <- blank; replaced <- TRUE },
+                                    error = function(e) NULL)
+            if (!replaced) tryCatch({ slot(s4, "image") <- blank; replaced <- TRUE },
+                                    error = function(e) NULL)
+            if (!replaced) {
+                message(sprintf("  (note: could not replace image for '%s'; %s — ",
+                      img_name, "SpatialFeaturePlot will show H&E background)"))
+            }
+            obj@images[[img_name]] <- s4
         }
     }
 
