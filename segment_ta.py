@@ -237,6 +237,7 @@ def merge_fragments_to_major_samples(
     max_split_k: int = 6,
     merge_max_dist: float = 80.0,
     discard_far_islands: bool = True,
+    split_large: bool = False,
 ) -> np.ndarray:
     """
     小碎片合并策略：
@@ -251,27 +252,28 @@ def merge_fragments_to_major_samples(
 
     print("\n面积/样本数先验后处理：")
 
-    # 0. 对明显过大的 component 兜底拆分。
+    # 0. 如果启用，对明显过大的 component 兜底拆分（notebook 默认不拆分）。
     target = estimate_target_bins(cnts, min_bins=min_bins, target_bins=target_bins)
     print(f"  target bins:       {target:.1f}")
 
     next_id = int(out.max()) + 1
     split_events = []
-    ids, cnts = np.unique(out[out > 0], return_counts=True)
-    for cid, n in zip(ids.tolist(), cnts.tolist()):
-        if n <= large_component_frac * target:
-            continue
-        k = int(np.round(n / target))
-        k = max(2, min(k, max_split_k, int(n)))
-        idx = np.where(out == cid)[0]
-        coords = np.column_stack([array_row[idx], array_col[idx]])
-        labs = _simple_kmeans_farthest(coords, k=k)
-        for t, lab_id in enumerate(sorted(np.unique(labs).tolist())):
-            new_id = int(cid) if t == 0 else next_id
-            if t > 0:
-                next_id += 1
-            out[idx[labs == lab_id]] = new_id
-        split_events.append((int(cid), int(n), int(k)))
+    if split_large:
+        ids, cnts = np.unique(out[out > 0], return_counts=True)
+        for cid, n in zip(ids.tolist(), cnts.tolist()):
+            if n <= large_component_frac * target:
+                continue
+            k = int(np.round(n / target))
+            k = max(2, min(k, max_split_k, int(n)))
+            idx = np.where(out == cid)[0]
+            coords = np.column_stack([array_row[idx], array_col[idx]])
+            labs = _simple_kmeans_farthest(coords, k=k)
+            for t, lab_id in enumerate(sorted(np.unique(labs).tolist())):
+                new_id = int(cid) if t == 0 else next_id
+                if t > 0:
+                    next_id += 1
+                out[idx[labs == lab_id]] = new_id
+            split_events.append((int(cid), int(n), int(k)))
 
     if split_events:
         for cid, n, k in split_events:
@@ -358,6 +360,7 @@ def split_samples_by_conservative_components(
     max_split_k: int = 6,
     small_merge_max_dist: float = 80.0,
     discard_far_islands: bool = True,
+    split_large: bool = False,
 ):
     pos0 = pos.copy().set_index("barcode", drop=False)
     common = [bc for bc in adata.obs_names if bc in pos0.index]
@@ -392,11 +395,28 @@ def split_samples_by_conservative_components(
         # opening = erosion + dilation；它会打断细桥，但不会像 closing 那样把样本间空隙填上。
         work_grid = binary_opening(work_grid, footprint=disk(open_radius))
 
-    work_grid = remove_small_objects(work_grid, min_size=min_bins)
+    # 保存 opening 后的网格（用于可视化），之后还会进一步过滤
+    opened_grid = work_grid.copy()
+
+    # Round 1: labeling → 按 label 计数过滤小 component → remove_small_objects → 重新 label
+    # 与 notebook 保持一致的两轮 labeling 策略
     raw_lab = label(work_grid, connectivity=connectivity)
+    provisional = np.zeros(len(pos2), dtype=np.int32)
+    provisional[foreground] = raw_lab[rr[foreground], cc[foreground]]
+
+    raw_ids, raw_counts = np.unique(provisional[provisional > 0], return_counts=True)
+    keep_ids = set(raw_ids[raw_counts >= min_bins].tolist())
+    keep_grid = np.isin(raw_lab, list(keep_ids))
+    keep_grid = remove_small_objects(keep_grid, min_size=min_bins)
+    lab_grid = label(keep_grid, connectivity=connectivity)
 
     sample_id = np.zeros(len(pos2), dtype=np.int32)
-    sample_id[foreground] = raw_lab[rr[foreground], cc[foreground]]
+    sample_id[foreground] = lab_grid[rr[foreground], cc[foreground]]
+
+    # Round 1 过滤：去掉仍然 < min_bins 的小 component
+    ids, cnts = np.unique(sample_id[sample_id > 0], return_counts=True)
+    ids = ids[cnts >= min_bins]
+    sample_id[~np.isin(sample_id, ids)] = 0
 
     # 如果 opening 后某些 foreground bin 没有 label，保守地补回最近 label。
     if rescue_unassigned and np.any(sample_id > 0):
@@ -413,12 +433,6 @@ def split_samples_by_conservative_components(
             sample_id[rescue_indices[valid]] = assigned_ids[idxs[valid]]
             print(f"  rescue opening:    {int(valid.sum()):,}/{int(rescue_mask.sum()):,}")
 
-    # 过滤一次极小 component。
-    ids, cnts = np.unique(sample_id[sample_id > 0], return_counts=True)
-    tiny = set(ids[cnts < min_bins].tolist())
-    if tiny:
-        sample_id[np.isin(sample_id, list(tiny))] = 0
-
     if expected_samples > 0 or use_size_prior:
         sample_id = merge_fragments_to_major_samples(
             sample_id=sample_id,
@@ -433,6 +447,7 @@ def split_samples_by_conservative_components(
             max_split_k=max_split_k,
             merge_max_dist=small_merge_max_dist,
             discard_far_islands=discard_far_islands,
+            split_large=split_large,
         )
 
     sample_id[~foreground] = 0
@@ -556,7 +571,7 @@ def visualize_sample_split(img, pos: pd.DataFrame, grid_info: dict, sf: dict,
     print(f"  figure:            {out_png}")
 
 
-def write_outputs(base: Path, bin_size: str, adata: sc.AnnData, pos: pd.DataFrame, grid_info: dict, img, sf: dict, tag: str):
+def write_outputs(base: Path, bin_size: str, adata: sc.AnnData, pos: pd.DataFrame, grid_info: dict, img, sf: dict, tag: str, overlay_he: bool = True):
     out_dir = base / "_sample_split_v3" / f"square_{bin_size}" / tag
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -577,7 +592,7 @@ def write_outputs(base: Path, bin_size: str, adata: sc.AnnData, pos: pd.DataFram
     np.save(fg_npy, grid_info["foreground_grid"])
     np.save(opened_npy, grid_info["opened_grid"])
     visualize_sample_split(img, pos, grid_info, sf, fig_path,
-                           overlay_he=(not args.no_he_image))
+                           overlay_he=overlay_he)
 
     print("\n输出文件：")
     print(f"  AnnData:           {h5ad_path}")
@@ -607,6 +622,7 @@ def main():
     parser.add_argument("--major-frac", type=float, default=0.45)
     parser.add_argument("--large-component-frac", type=float, default=1.8)
     parser.add_argument("--max-split-k", type=int, default=6)
+    parser.add_argument("--split-large", action="store_true", help="对明显过大的 component 用 k-means 拆分（默认不拆分，与 notebook 一致）")
     parser.add_argument("--small-merge-max-dist", type=float, default=None, help="小碎片合并到最近 major 的最大距离，单位 bin grid")
     parser.add_argument("--keep-far-islands", action="store_true", help="远离 major 的小岛保留为独立 sample；默认丢弃")
     parser.add_argument("--tag", type=str, default="run")
@@ -627,6 +643,7 @@ def main():
     print(f"  rescue_max_dist:   {rescue_max_dist}")
     print(f"  expected_samples:  {args.expected_samples}")
     print(f"  size_prior:        {args.size_prior}")
+    print(f"  split_large:       {args.split_large}")
     print(f"  merge_max_dist:    {small_merge_max_dist}")
 
     adata2, pos2, grid_info = split_samples_by_conservative_components(
@@ -647,6 +664,7 @@ def main():
         max_split_k=args.max_split_k,
         small_merge_max_dist=small_merge_max_dist,
         discard_far_islands=not args.keep_far_islands,
+        split_large=args.split_large,
     )
 
     adata2 = add_spatial_to_adata(adata2, pos2, sf)
@@ -655,7 +673,8 @@ def main():
         tag = f"{tag}_N{args.expected_samples}"
     if args.open_radius > 0:
         tag = f"{tag}_open{args.open_radius}"
-    write_outputs(base, args.bin, adata2, pos2, grid_info, img, sf, tag=tag)
+    write_outputs(base, args.bin, adata2, pos2, grid_info, img, sf, tag=tag,
+                  overlay_he=(not args.no_he_image))
 
 
 if __name__ == "__main__":
